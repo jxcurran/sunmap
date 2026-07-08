@@ -1,0 +1,569 @@
+/* Sun Path — UI subsystem styles (src/ui/*). The map subsystem (src/map/*)
+   renders into #map; everything here styles #ui-root and its descendants,
+   plus the minimal #app/#map baseline layout that nothing else establishes. */
+
+:root {
+  color-scheme: dark;
+  --panel-bg: rgba(15, 20, 30, 0.55);
+  --panel-bg-solid: rgba(10, 14, 22, 0.88);
+  --panel-border: rgba(255, 255, 255, 0.14);
+  --text-primary: #f5f7fa;
+  --text-secondary: #b8c2d0;
+  --accent: #ffd166;
+  --accent-2: #4fd1c5;
+  --danger: #ff8a8a;
+  --radius: 14px;
+  --radius-sm: 8px;
+  --spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  font-family:
+    system-ui,
+    -apple-system,
+    'Segoe UI',
+    Roboto,
+    sans-serif;
+  color: var(--text-primary);
+}
+
+#app {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+}
+
+/* Baseline map container positioning — nothing else in the app sets this yet. */
+#map {
+  position: absolute;
+  inset: 0;
+}
+
+#ui-root {
+  position: absolute;
+  inset: 0;
+  /* Let clicks fall through to the map everywhere except actual UI chrome. */
+  pointer-events: none;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+}
+
+input {
+  font: inherit;
+}
+
+.ui-shell {
+  position: absolute;
+  inset: 0;
+}
+
+/* ---------- Glassmorphism panel base (FR-10.4 / FR-12.3 contrast) ---------- */
+
+.search-box,
+.controls,
+.panels,
+.date-picker,
+.timeline {
+  pointer-events: auto;
+  background: var(--panel-bg);
+  backdrop-filter: blur(16px) saturate(140%);
+  -webkit-backdrop-filter: blur(16px) saturate(140%);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  color: var(--text-primary);
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.7);
+}
+
+/* ---------- Top bar: search (left) + controls (right) ---------- */
+
+.topbar {
+  position: absolute;
+  top: 16px;
+  left: 16px;
+  right: 16px;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.search-mount {
+  flex: 1 1 320px;
+  max-width: 420px;
+}
+
+.controls-mount {
+  flex: 0 0 auto;
+}
+
+/* ---------- Search ---------- */
+
+.search-box {
+  padding: 10px;
+  position: relative;
+}
+
+.search-input-row {
+  display: flex;
+  gap: 8px;
+}
+
+.search-input {
+  flex: 1;
+  min-width: 0;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--panel-border);
+  background: rgba(0, 0, 0, 0.3);
+  color: var(--text-primary);
+}
+
+.search-input::placeholder {
+  color: var(--text-secondary);
+}
+
+.locate-btn,
+.style-toggle button,
+.return-live-btn,
+.advanced-toggle,
+.date-shortcuts button,
+.sheet-toggle {
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--panel-border);
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-primary);
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    background 150ms ease,
+    transform 150ms var(--spring);
+}
+
+.locate-btn:hover,
+.style-toggle button:hover,
+.return-live-btn:hover,
+.advanced-toggle:hover,
+.date-shortcuts button:hover {
+  background: rgba(255, 255, 255, 0.18);
+}
+
+.locate-btn:active,
+.date-shortcuts button:active {
+  transform: scale(0.96);
+}
+
+.search-results {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 4px;
+  max-height: 260px;
+  overflow-y: auto;
+  border-radius: var(--radius-sm);
+  background: var(--panel-bg-solid);
+  border: 1px solid var(--panel-border);
+}
+
+.search-result {
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: 0.92rem;
+}
+
+.search-result:hover,
+.search-result.active {
+  background: rgba(255, 209, 102, 0.22);
+}
+
+.search-error {
+  margin-top: 8px;
+  color: var(--danger);
+  font-size: 0.88rem;
+}
+
+.locate-notice {
+  margin-top: 8px;
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+}
+
+/* ---------- Controls: mode chip, return-to-live, style toggle, offline, notices ---------- */
+
+.controls {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 10px 12px;
+}
+
+.mode-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  font-size: 0.85rem;
+  letter-spacing: 0.04em;
+}
+
+.live-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--text-secondary);
+}
+
+.mode-chip.live .live-dot {
+  background: #5ee68a;
+  animation: live-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes live-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(94, 230, 138, 0.55);
+  }
+  50% {
+    box-shadow: 0 0 0 6px rgba(94, 230, 138, 0);
+  }
+}
+
+.return-live-btn {
+  font-weight: 600;
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.style-toggle {
+  display: flex;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  border: 1px solid var(--panel-border);
+}
+
+.style-toggle button {
+  border: none;
+  border-radius: 0;
+}
+
+.style-toggle button.active {
+  background: var(--accent-2);
+  color: #06231f;
+  font-weight: 600;
+}
+
+.offline-chip {
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  background: rgba(255, 138, 138, 0.18);
+  border: 1px solid rgba(255, 138, 138, 0.4);
+  font-size: 0.8rem;
+}
+
+.notices {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: flex-end;
+}
+
+.notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px 6px 12px;
+  border-radius: var(--radius-sm);
+  background: rgba(255, 209, 102, 0.16);
+  border: 1px solid rgba(255, 209, 102, 0.4);
+  font-size: 0.8rem;
+  max-width: 320px;
+}
+
+.notice-close {
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font-size: 1rem;
+  line-height: 1;
+  padding: 2px 4px;
+}
+
+/* ---------- Data panels ---------- */
+
+.panels-mount {
+  position: absolute;
+  top: 84px;
+  right: 16px;
+  width: 300px;
+  max-width: calc(100vw - 32px);
+}
+
+.panels {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.sheet-toggle {
+  display: none;
+}
+
+.primary-metrics {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.metric {
+  font-weight: 700;
+}
+
+.metric-time {
+  font-size: 2rem;
+  letter-spacing: 0.01em;
+}
+
+.metric-altitude,
+.metric-azimuth {
+  font-size: 1.1rem;
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
+.polar-banner {
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  background: rgba(79, 209, 197, 0.18);
+  border: 1px solid rgba(79, 209, 197, 0.4);
+  font-weight: 600;
+  text-align: center;
+}
+
+.advanced-toggle {
+  align-self: flex-start;
+}
+
+/* FR-11.1: spring-ish easing on open/close via a max-height transition —
+   simplest approach that needs no JS height measurement or extra wrapper. */
+.advanced-panel {
+  display: block;
+  max-height: 0;
+  overflow: hidden;
+  transition: max-height 320ms var(--spring);
+}
+
+.advanced-panel.open {
+  max-height: 400px;
+}
+
+.advanced-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  font-size: 0.88rem;
+}
+
+.advanced-label {
+  color: var(--text-secondary);
+}
+
+.advanced-value {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- Bottom dock: date picker + timeline ---------- */
+
+.bottom-dock {
+  position: absolute;
+  left: 50%;
+  bottom: 16px;
+  transform: translateX(-50%);
+  width: min(720px, calc(100vw - 32px));
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+
+.date-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 10px;
+}
+
+.date-input {
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--panel-border);
+  background: rgba(0, 0, 0, 0.3);
+  color: var(--text-primary);
+  color-scheme: dark;
+}
+
+.date-shortcuts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.date-shortcuts button {
+  font-size: 0.8rem;
+  padding: 6px 10px;
+}
+
+/* ---------- Timeline arc slider (FR-4 / FR-12.4) ---------- */
+
+.timeline {
+  width: 100%;
+  position: relative;
+  padding: 8px 12px 4px;
+}
+
+.timeline:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.timeline-arc {
+  width: 100%;
+  aspect-ratio: 300 / 170;
+  display: block;
+  touch-action: none;
+}
+
+.track {
+  transition: stroke 240ms ease;
+}
+
+.markers .marker {
+  fill: rgba(255, 255, 255, 0.85);
+  stroke: rgba(0, 0, 0, 0.4);
+  stroke-width: 1;
+}
+
+.handle {
+  fill: var(--accent);
+  stroke: #3a2a00;
+  stroke-width: 2;
+  cursor: grab;
+  transition: r 150ms ease;
+}
+
+.timeline:active .handle {
+  cursor: grabbing;
+}
+
+.handle.snap-pulse {
+  animation: handle-pulse 420ms var(--spring);
+}
+
+@keyframes handle-pulse {
+  0% {
+    r: 9;
+  }
+  40% {
+    r: 15;
+  }
+  100% {
+    r: 9;
+  }
+}
+
+.timeline-readout {
+  position: absolute;
+  transform: translate(-50%, -140%);
+  background: var(--panel-bg-solid);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius-sm);
+  padding: 4px 8px;
+  font-size: 0.8rem;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.timeline-readout.static {
+  position: static;
+  transform: none;
+  display: block;
+  width: fit-content;
+  margin: 0 auto 6px;
+}
+
+.timeline-polar {
+  text-align: center;
+  padding: 10px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+/* ---------- Responsive: bottom-sheet panels below 768px (FR-10.3.1) ---------- */
+
+@media (max-width: 768px) {
+  .panels-mount {
+    top: auto;
+    right: 0;
+    left: 0;
+    bottom: 0;
+    width: 100%;
+    max-width: none;
+  }
+
+  .panels {
+    border-radius: var(--radius) var(--radius) 0 0;
+    max-height: 60vh;
+    overflow-y: auto;
+  }
+
+  .sheet-toggle {
+    display: block;
+    align-self: center;
+    margin: -4px 0 4px;
+    font-weight: 700;
+  }
+
+  .panels.collapsed .primary-metrics,
+  .panels.collapsed .polar-banner,
+  .panels.collapsed .advanced-toggle,
+  .panels.collapsed .advanced-panel {
+    display: none;
+  }
+
+  .bottom-dock {
+    bottom: 64px;
+  }
+
+  .topbar {
+    top: 12px;
+    left: 12px;
+    right: 12px;
+  }
+}
+
+/* ---------- Reduced motion ---------- */
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.001ms !important;
+    transition-duration: 0.001ms !important;
+  }
+}
