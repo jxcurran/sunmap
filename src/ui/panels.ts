@@ -116,7 +116,16 @@ export function mountPanels(container: HTMLElement, store: Store): UiComponent {
     rCivil.value.textContent = `${formatEventTime(ev.civilDawn, tzId)} – ${formatEventTime(ev.civilDusk, tzId)}`;
     rNautical.value.textContent = `${formatEventTime(ev.nauticalDawn, tzId)} – ${formatEventTime(ev.nauticalDusk, tzId)}`;
     rAstro.value.textContent = `${formatEventTime(ev.astronomicalDawn, tzId)} – ${formatEventTime(ev.astronomicalDusk, tzId)}`;
-    rLength.value.textContent = formatDuration(ev.dayLengthMs);
+    // "Day Length" means daylight duration (sunrise->sunset), not the calendar-day
+    // span — ev.dayLengthMs is the latter (23/24/25h, used for DST timeline math) and
+    // would misleadingly read "~24h 0m" on almost every ordinary day.
+    const daylightMs =
+      ev.sunrise !== null && ev.sunset !== null
+        ? ev.sunset - ev.sunrise
+        : ctx.solarDay.polar === 'midnight-sun'
+          ? ev.dayLengthMs
+          : 0;
+    rLength.value.textContent = formatDuration(daylightMs);
 
     // FR-6.1: suppress sunrise/sunset rows that don't apply for the day.
     rSunrise.row.hidden = ev.sunrise === null;

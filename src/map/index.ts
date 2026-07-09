@@ -36,6 +36,7 @@ export function createSunMap(container: HTMLElement, store: Store, urlSync: UrlS
     pitch: initial.camera.pitch,
     bearing: initial.camera.bearing,
     maxTileCacheSize: 100, // NFR-1.3 budget cap; MapLibre's own cache handles eviction beyond this
+    maxPitch: 85, // MapLibre's own ceiling; default of 60 can't get low/close enough to look up at the dome from near ground level
   });
 
   const tintEl = createTintOverlay(container);
@@ -151,7 +152,7 @@ export function createSunMap(container: HTMLElement, store: Store, urlSync: UrlS
 
   const qualityMonitor = createQualityMonitor({
     onTierChange: (tier) => store.dispatch({ type: 'SET_QUALITY', tier, origin: 'system' }),
-    onFrame: (dt) => console.debug('[sun-map] frame', dt), // NFR-1.9 hook; no analytics backend exists
+    onFrame: () => {}, // NFR-1.9 hook; no analytics backend exists to send to (was console.debug-per-frame, which just spammed devtools)
   });
   qualityMonitor.start();
 

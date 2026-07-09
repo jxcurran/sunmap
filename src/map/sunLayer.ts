@@ -11,12 +11,10 @@ import { getSolarDay, getSunPosition, type SolarDay } from '../solar';
 import { localDateOf } from '../time';
 import { DOME_RADIUS_M, domePoint, fadeFactor, projectToClip, clipToScreen } from './geometry';
 
-// Plain WebGL, one program, one vertex layout (vec3 mercator pos + float alpha) shared
-// by the arc/ray/marker — deliberately minimal per Technical Architecture §5.1 (no
-// three.js/deck.gl, that would blow the NFR-1.6 bundle budget). Alpha is carried
-// per-vertex (rather than as a second uniform-only color) so premultiplied-alpha
-// blending works with MapLibre's default blend func without us having to change it.
-const VERTEX_SRC = `
+// Point program: used only for the single sun-marker dot (gl.POINTS + gl_PointSize is
+// reliably respected across browsers, unlike gl.lineWidth() — see the ribbon program
+// below for why the arc/ray need real geometry instead).
+const POINT_VERTEX_SRC = `
 attribute vec3 a_pos;
 attribute float a_alpha;
 uniform mat4 u_matrix;
@@ -25,6 +23,40 @@ varying float v_alpha;
 void main() {
   gl_Position = u_matrix * vec4(a_pos, 1.0);
   gl_PointSize = u_pointSize;
+  v_alpha = a_alpha;
+}`;
+
+// Ribbon program: renders the arc/ray as a screen-space-constant-width triangle strip.
+// gl.lineWidth() is not a usable option here — WebGL only requires implementations to
+// support width 1, and every ANGLE-backed browser (Chrome/Edge on Windows and Linux,
+// all browsers on Android) clamps it to 1px regardless of what's requested, so no
+// tuning of that value could ever have produced a visibly thicker line. Real triangle
+// geometry, extruded perpendicular to each vertex's screen-space tangent, is the only
+// robust cross-browser way to get a thick line. `a_next` is the neighboring point (in
+// the same world space as `a_pos`) used to derive that tangent — always the "forward"
+// neighbor along the line (linearly extrapolated past the last point) so the tangent
+// direction never flips sign partway along a strip.
+const RIBBON_VERTEX_SRC = `
+attribute vec3 a_pos;
+attribute vec3 a_next;
+attribute float a_side;
+attribute float a_alpha;
+uniform mat4 u_matrix;
+uniform vec2 u_resolution;
+uniform float u_width;
+varying float v_alpha;
+void main() {
+  vec4 clipA = u_matrix * vec4(a_pos, 1.0);
+  vec4 clipB = u_matrix * vec4(a_next, 1.0);
+  vec2 ndcA = clipA.xy / clipA.w;
+  vec2 ndcB = clipB.xy / clipB.w;
+  vec2 screenDir = (ndcB - ndcA) * u_resolution;
+  float len = length(screenDir);
+  vec2 dir = len > 0.0001 ? screenDir / len : vec2(1.0, 0.0);
+  vec2 normal = vec2(-dir.y, dir.x);
+  vec2 offsetPx = normal * (u_width * 0.5) * a_side;
+  vec2 offsetNdc = (offsetPx / u_resolution) * 2.0;
+  gl_Position = vec4(clipA.xy + offsetNdc * clipA.w, clipA.z, clipA.w);
   v_alpha = a_alpha;
 }`;
 
@@ -40,7 +72,9 @@ const HIT_RADIUS_PX = 24;
 const ARC_NIGHT_ALPHA = 0.25; // baked per-vertex dimming for the below-horizon half of the static arc
 const XRAY_ALPHA_FLOOR = 0.35; // FR-14.1(a): marker/ray never fully disappear below horizon
 const MARKER_POINT_SIZE = 14;
-const DASH_SEGMENTS = 8; // below-horizon ray: alternating on/off segments approximate a dashed line
+const DASH_SEGMENTS = 8; // below-horizon ray: alternating on/off pieces approximate a dashed line
+const ARC_WIDTH_PX = 2.5;
+const RAY_WIDTH_PX = 3;
 
 const ARC_COLOR: [number, number, number] = [1.0, 0.78, 0.32];
 const MARKER_COLOR: [number, number, number] = [1.0, 0.93, 0.55];
@@ -70,7 +104,48 @@ function linkProgram(gl: WebGLRenderingContext | WebGL2RenderingContext, vs: Web
   return program;
 }
 
-const STRIDE = 4 * Float32Array.BYTES_PER_ELEMENT; // x,y,z,alpha
+const POINT_STRIDE = 4 * Float32Array.BYTES_PER_ELEMENT; // x,y,z,alpha
+const RIBBON_STRIDE = 8 * Float32Array.BYTES_PER_ELEMENT; // x,y,z, nx,ny,nz, side, alpha
+
+interface RibbonPoint {
+  pos: [number, number, number];
+  alpha: number;
+}
+
+/** Two vertices (side=+1,-1) per input point, tangent taken from the forward neighbor
+ * (linearly extrapolated past the last point) so direction sign is consistent along
+ * the whole strip — see RIBBON_VERTEX_SRC's comment for why that consistency matters. */
+function buildRibbon(points: RibbonPoint[]): Float32Array {
+  const n = points.length;
+  const out = new Float32Array(n * 2 * 8);
+  let o = 0;
+  for (let i = 0; i < n; i++) {
+    const [x, y, z] = points[i].pos;
+    let nx: number;
+    let ny: number;
+    let nz: number;
+    if (i < n - 1) {
+      [nx, ny, nz] = points[i + 1].pos;
+    } else {
+      const [px, py, pz] = points[Math.max(0, n - 2)].pos;
+      nx = x + (x - px);
+      ny = y + (y - py);
+      nz = z + (z - pz);
+    }
+    const alpha = points[i].alpha;
+    for (const side of [1, -1]) {
+      out[o++] = x;
+      out[o++] = y;
+      out[o++] = z;
+      out[o++] = nx;
+      out[o++] = ny;
+      out[o++] = nz;
+      out[o++] = side;
+      out[o++] = alpha;
+    }
+  }
+  return out;
+}
 
 export class SunLayer implements CustomLayerInterface {
   id = 'sun-path-layer';
@@ -83,12 +158,23 @@ export class SunLayer implements CustomLayerInterface {
 
   private map: MapLibreMap | null = null;
   private gl: WebGLRenderingContext | WebGL2RenderingContext | null = null;
-  private program: WebGLProgram | null = null;
-  private aPos = -1;
-  private aAlpha = -1;
-  private uMatrix: WebGLUniformLocation | null = null;
-  private uColor: WebGLUniformLocation | null = null;
-  private uPointSize: WebGLUniformLocation | null = null;
+
+  private pointProgram: WebGLProgram | null = null;
+  private pAPos = -1;
+  private pAAlpha = -1;
+  private pUMatrix: WebGLUniformLocation | null = null;
+  private pUColor: WebGLUniformLocation | null = null;
+  private pUPointSize: WebGLUniformLocation | null = null;
+
+  private ribbonProgram: WebGLProgram | null = null;
+  private rAPos = -1;
+  private rANext = -1;
+  private rASide = -1;
+  private rAAlpha = -1;
+  private rUMatrix: WebGLUniformLocation | null = null;
+  private rUColor: WebGLUniformLocation | null = null;
+  private rUResolution: WebGLUniformLocation | null = null;
+  private rUWidth: WebGLUniformLocation | null = null;
 
   private arcBuffer: WebGLBuffer | null = null;
   private arcVertexCount = 0;
@@ -151,11 +237,12 @@ export class SunLayer implements CustomLayerInterface {
     map.off('webglcontextlost', this.handleContextLost);
     map.off('webglcontextrestored', this.handleContextRestored);
     this.teardownPointerDrag();
-    if (this.program) gl.deleteProgram(this.program);
+    if (this.pointProgram) gl.deleteProgram(this.pointProgram);
+    if (this.ribbonProgram) gl.deleteProgram(this.ribbonProgram);
     if (this.arcBuffer) gl.deleteBuffer(this.arcBuffer);
     if (this.rayBuffer) gl.deleteBuffer(this.rayBuffer);
     if (this.markerBuffer) gl.deleteBuffer(this.markerBuffer);
-    this.program = null;
+    this.pointProgram = this.ribbonProgram = null;
     this.arcBuffer = this.rayBuffer = this.markerBuffer = null;
   }
 
@@ -166,7 +253,7 @@ export class SunLayer implements CustomLayerInterface {
   render(gl: WebGLRenderingContext | WebGL2RenderingContext, matrix: ArrayLike<number>): void {
     this.lastMatrix.set(matrix);
     this.haveMatrix = true;
-    if (this.contextLost || !this.program || !this.solarDay) return;
+    if (this.contextLost || !this.ribbonProgram || !this.pointProgram || !this.solarDay) return;
 
     const state = this.store.getState();
     const sun = getSunPosition(state.time.epochMs, this.pin.lat, this.pin.lng);
@@ -176,21 +263,25 @@ export class SunLayer implements CustomLayerInterface {
     // toggles at the exact horizon — an acceptable simplification since alpha is
     // already partway through its fade right at that crossing, masking the switch.
     const aboveHorizon = sun.altitude >= 0;
+    const resolution: [number, number] = [gl.drawingBufferWidth, gl.drawingBufferHeight];
+    // u_resolution is in device pixels (drawingBuffer size); widths below are authored
+    // in CSS pixels, so scale by devicePixelRatio to keep the visual width consistent
+    // across screens instead of getting thinner on high-DPI displays.
+    const dpr = window.devicePixelRatio || 1;
 
-    gl.useProgram(this.program);
-    // Use the copied Float32Array (already made above) rather than casting the raw
-    // `matrix` param, since MapLibre's mat4 type also allows a plain number[].
-    gl.uniformMatrix4fv(this.uMatrix, false, this.lastMatrix);
     gl.depthMask(false); // thin lines/points shouldn't punch holes in the shared depth buffer for later layers
 
     // --- static trajectory arc: always normal depth test; per-vertex alpha already
     // dims the below-horizon half (baked at build time in rebuildArc). ---
     if (this.arcVertexCount > 1 && this.arcBuffer) {
+      gl.useProgram(this.ribbonProgram);
+      gl.uniformMatrix4fv(this.rUMatrix, false, this.lastMatrix);
+      gl.uniform2f(this.rUResolution, resolution[0], resolution[1]);
+      gl.uniform1f(this.rUWidth, ARC_WIDTH_PX * dpr);
       gl.enable(gl.DEPTH_TEST);
-      gl.uniform1f(this.uPointSize, 1.0);
-      gl.uniform3f(this.uColor, ARC_COLOR[0], ARC_COLOR[1], ARC_COLOR[2]);
-      this.bindVertexLayout(gl, this.arcBuffer);
-      gl.drawArrays(gl.LINE_STRIP, 0, this.arcVertexCount);
+      gl.uniform3f(this.rUColor, ARC_COLOR[0], ARC_COLOR[1], ARC_COLOR[2]);
+      this.bindRibbonLayout(gl, this.arcBuffer);
+      gl.drawArrays(gl.TRIANGLE_STRIP, 0, this.arcVertexCount * 2);
     }
 
     // --- azimuth ray + sun marker: x-ray mode below horizon (FR-14.1a) — depth test
@@ -202,22 +293,36 @@ export class SunLayer implements CustomLayerInterface {
     if (aboveHorizon) gl.enable(gl.DEPTH_TEST);
     else gl.disable(gl.DEPTH_TEST);
 
-    const rayVerts = this.buildRayVertices(pinMc, markerMc, alpha, aboveHorizon);
-    if (this.rayBuffer && rayVerts.length > 0) {
+    const raySegments = this.buildRaySegments(pinMc, markerMc, alpha, aboveHorizon);
+    if (this.rayBuffer && raySegments.length > 0) {
+      gl.useProgram(this.ribbonProgram);
+      gl.uniformMatrix4fv(this.rUMatrix, false, this.lastMatrix);
+      gl.uniform2f(this.rUResolution, resolution[0], resolution[1]);
+      gl.uniform1f(this.rUWidth, RAY_WIDTH_PX * dpr);
+      gl.uniform3f(this.rUColor, ARC_COLOR[0], ARC_COLOR[1], ARC_COLOR[2]);
+      const merged = new Float32Array(raySegments.length * 16); // 4 verts * 8 floats per 2-point segment
+      let o = 0;
+      for (const seg of raySegments) {
+        merged.set(seg, o);
+        o += seg.length;
+      }
       gl.bindBuffer(gl.ARRAY_BUFFER, this.rayBuffer);
-      gl.bufferData(gl.ARRAY_BUFFER, rayVerts, gl.DYNAMIC_DRAW);
-      gl.uniform3f(this.uColor, ARC_COLOR[0], ARC_COLOR[1], ARC_COLOR[2]);
-      this.bindVertexLayout(gl, this.rayBuffer);
-      gl.drawArrays(gl.LINES, 0, rayVerts.length / 4);
+      gl.bufferData(gl.ARRAY_BUFFER, merged, gl.DYNAMIC_DRAW);
+      this.bindRibbonLayout(gl, this.rayBuffer);
+      for (let i = 0; i < raySegments.length; i++) {
+        gl.drawArrays(gl.TRIANGLE_STRIP, i * 4, 4);
+      }
     }
 
     if (this.markerBuffer) {
+      gl.useProgram(this.pointProgram);
+      gl.uniformMatrix4fv(this.pUMatrix, false, this.lastMatrix);
       const markerVerts = new Float32Array([markerMc.x, markerMc.y, markerMc.z, alpha]);
       gl.bindBuffer(gl.ARRAY_BUFFER, this.markerBuffer);
       gl.bufferData(gl.ARRAY_BUFFER, markerVerts, gl.DYNAMIC_DRAW);
-      gl.uniform1f(this.uPointSize, MARKER_POINT_SIZE);
-      gl.uniform3f(this.uColor, MARKER_COLOR[0], MARKER_COLOR[1], MARKER_COLOR[2]);
-      this.bindVertexLayout(gl, this.markerBuffer);
+      gl.uniform1f(this.pUPointSize, MARKER_POINT_SIZE);
+      gl.uniform3f(this.pUColor, MARKER_COLOR[0], MARKER_COLOR[1], MARKER_COLOR[2]);
+      this.bindPointLayout(gl, this.markerBuffer);
       gl.drawArrays(gl.POINTS, 0, 1);
     }
 
@@ -226,74 +331,98 @@ export class SunLayer implements CustomLayerInterface {
     gl.depthMask(true);
   }
 
-  private bindVertexLayout(gl: WebGLRenderingContext | WebGL2RenderingContext, buffer: WebGLBuffer): void {
+  private bindPointLayout(gl: WebGLRenderingContext | WebGL2RenderingContext, buffer: WebGLBuffer): void {
     gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
-    gl.enableVertexAttribArray(this.aPos);
-    gl.vertexAttribPointer(this.aPos, 3, gl.FLOAT, false, STRIDE, 0);
-    gl.enableVertexAttribArray(this.aAlpha);
-    gl.vertexAttribPointer(this.aAlpha, 1, gl.FLOAT, false, STRIDE, 3 * Float32Array.BYTES_PER_ELEMENT);
+    gl.enableVertexAttribArray(this.pAPos);
+    gl.vertexAttribPointer(this.pAPos, 3, gl.FLOAT, false, POINT_STRIDE, 0);
+    gl.enableVertexAttribArray(this.pAAlpha);
+    gl.vertexAttribPointer(this.pAAlpha, 1, gl.FLOAT, false, POINT_STRIDE, 3 * Float32Array.BYTES_PER_ELEMENT);
+  }
+
+  private bindRibbonLayout(gl: WebGLRenderingContext | WebGL2RenderingContext, buffer: WebGLBuffer): void {
+    gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+    gl.enableVertexAttribArray(this.rAPos);
+    gl.vertexAttribPointer(this.rAPos, 3, gl.FLOAT, false, RIBBON_STRIDE, 0);
+    gl.enableVertexAttribArray(this.rANext);
+    gl.vertexAttribPointer(this.rANext, 3, gl.FLOAT, false, RIBBON_STRIDE, 3 * Float32Array.BYTES_PER_ELEMENT);
+    gl.enableVertexAttribArray(this.rASide);
+    gl.vertexAttribPointer(this.rASide, 1, gl.FLOAT, false, RIBBON_STRIDE, 6 * Float32Array.BYTES_PER_ELEMENT);
+    gl.enableVertexAttribArray(this.rAAlpha);
+    gl.vertexAttribPointer(this.rAAlpha, 1, gl.FLOAT, false, RIBBON_STRIDE, 7 * Float32Array.BYTES_PER_ELEMENT);
   }
 
   // Dashed-line approximation (no geometry shaders needed): below the horizon, split
-  // the pin->marker segment into alternating on/off pieces via gl.LINES (each vertex
-  // pair is a disconnected segment) instead of one continuous gl.LINE_STRIP segment.
-  private buildRayVertices(
+  // the pin->marker segment into alternating on/off pieces, each its own tiny 2-point
+  // ribbon (drawn as a separate TRIANGLE_STRIP call — cheap, at most 4 segments).
+  private buildRaySegments(
     pinMc: { x: number; y: number; z: number },
     markerMc: { x: number; y: number; z: number },
     alpha: number,
     solid: boolean,
-  ): Float32Array {
+  ): Float32Array[] {
     const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
-    const point = (t: number) => ({
-      x: lerp(pinMc.x, markerMc.x, t),
-      y: lerp(pinMc.y, markerMc.y, t),
-      z: lerp(pinMc.z, markerMc.z, t),
-    });
+    const point = (t: number): [number, number, number] => [
+      lerp(pinMc.x, markerMc.x, t),
+      lerp(pinMc.y, markerMc.y, t),
+      lerp(pinMc.z, markerMc.z, t),
+    ];
     if (solid) {
-      const a = point(0);
-      const b = point(1);
-      return new Float32Array([a.x, a.y, a.z, alpha, b.x, b.y, b.z, alpha]);
+      return [buildRibbon([{ pos: point(0), alpha }, { pos: point(1), alpha }])];
     }
-    const out: number[] = [];
+    const out: Float32Array[] = [];
     for (let i = 0; i < DASH_SEGMENTS; i += 2) {
       const a = point(i / DASH_SEGMENTS);
       const b = point((i + 1) / DASH_SEGMENTS);
-      out.push(a.x, a.y, a.z, alpha, b.x, b.y, b.z, alpha);
+      out.push(buildRibbon([{ pos: a, alpha }, { pos: b, alpha }]));
     }
-    return new Float32Array(out);
+    return out;
   }
 
   private rebuildArc(solarDay: SolarDay): void {
     const gl = this.gl;
     if (!gl || !this.arcBuffer) return;
     const samples = solarDay.samples;
-    const data = new Float32Array(samples.length * 4);
-    for (let i = 0; i < samples.length; i++) {
-      const s = samples[i];
+    const points: RibbonPoint[] = samples.map((s) => {
       const p = domePoint(this.pin.lat, this.pin.lng, s.altitude, s.azimuth, DOME_RADIUS_M);
       const mc = maplibregl.MercatorCoordinate.fromLngLat({ lng: p.lng, lat: p.lat }, p.altitudeM);
-      data[i * 4] = mc.x;
-      data[i * 4 + 1] = mc.y;
-      data[i * 4 + 2] = mc.z;
-      data[i * 4 + 3] = s.altitude >= 0 ? 1.0 : ARC_NIGHT_ALPHA;
-    }
+      return { pos: [mc.x, mc.y, mc.z], alpha: s.altitude >= 0 ? 1.0 : ARC_NIGHT_ALPHA };
+    });
+    const data = buildRibbon(points);
     gl.bindBuffer(gl.ARRAY_BUFFER, this.arcBuffer);
     gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
     this.arcVertexCount = samples.length;
   }
 
   private buildGlObjects(gl: WebGLRenderingContext | WebGL2RenderingContext): void {
-    const vs = compileShader(gl, gl.VERTEX_SHADER, VERTEX_SRC);
-    const fs = compileShader(gl, gl.FRAGMENT_SHADER, FRAGMENT_SRC);
-    const program = linkProgram(gl, vs, fs);
-    gl.deleteShader(vs);
-    gl.deleteShader(fs);
-    this.program = program;
-    this.aPos = gl.getAttribLocation(program, 'a_pos');
-    this.aAlpha = gl.getAttribLocation(program, 'a_alpha');
-    this.uMatrix = gl.getUniformLocation(program, 'u_matrix');
-    this.uColor = gl.getUniformLocation(program, 'u_color');
-    this.uPointSize = gl.getUniformLocation(program, 'u_pointSize');
+    const pointVs = compileShader(gl, gl.VERTEX_SHADER, POINT_VERTEX_SRC);
+    const ribbonVs = compileShader(gl, gl.VERTEX_SHADER, RIBBON_VERTEX_SRC);
+    const fs1 = compileShader(gl, gl.FRAGMENT_SHADER, FRAGMENT_SRC);
+    const fs2 = compileShader(gl, gl.FRAGMENT_SHADER, FRAGMENT_SRC);
+
+    const pointProgram = linkProgram(gl, pointVs, fs1);
+    const ribbonProgram = linkProgram(gl, ribbonVs, fs2);
+    gl.deleteShader(pointVs);
+    gl.deleteShader(ribbonVs);
+    gl.deleteShader(fs1);
+    gl.deleteShader(fs2);
+
+    this.pointProgram = pointProgram;
+    this.pAPos = gl.getAttribLocation(pointProgram, 'a_pos');
+    this.pAAlpha = gl.getAttribLocation(pointProgram, 'a_alpha');
+    this.pUMatrix = gl.getUniformLocation(pointProgram, 'u_matrix');
+    this.pUColor = gl.getUniformLocation(pointProgram, 'u_color');
+    this.pUPointSize = gl.getUniformLocation(pointProgram, 'u_pointSize');
+
+    this.ribbonProgram = ribbonProgram;
+    this.rAPos = gl.getAttribLocation(ribbonProgram, 'a_pos');
+    this.rANext = gl.getAttribLocation(ribbonProgram, 'a_next');
+    this.rASide = gl.getAttribLocation(ribbonProgram, 'a_side');
+    this.rAAlpha = gl.getAttribLocation(ribbonProgram, 'a_alpha');
+    this.rUMatrix = gl.getUniformLocation(ribbonProgram, 'u_matrix');
+    this.rUColor = gl.getUniformLocation(ribbonProgram, 'u_color');
+    this.rUResolution = gl.getUniformLocation(ribbonProgram, 'u_resolution');
+    this.rUWidth = gl.getUniformLocation(ribbonProgram, 'u_width');
+
     this.arcBuffer = gl.createBuffer();
     this.rayBuffer = gl.createBuffer();
     this.markerBuffer = gl.createBuffer();

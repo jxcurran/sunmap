@@ -49,11 +49,17 @@ export function dayContext(state: AppState): DayContext {
  * minute during a fall-back repeated hour (FR-4.7). Test per the spec: convert
  * epoch -> wall time -> back to epoch disambiguating 'earlier'; if that round
  * trip lands somewhere else, we started from the later instance.
+ *
+ * `epochToWallTime` formats to whole-second precision (Intl drops milliseconds),
+ * so the round trip normally lands on `floor(epochMs / 1000) * 1000`, not
+ * `epochMs` itself — compare against the floored value or every live (sub-second)
+ * epoch would misreport as "(again)", even in zones with no DST at all.
  */
 export function isRepeatedInstance(epochMs: number, tzId: string): boolean {
+  const flooredEpoch = Math.floor(epochMs / 1000) * 1000;
   const w = epochToWallTime(epochMs, tzId);
   const earlier = wallTimeToEpoch(w, tzId, 'earlier');
-  return earlier.exists && earlier.epochMs !== epochMs;
+  return earlier.exists && earlier.epochMs !== flooredEpoch;
 }
 
 /** formatClock, with " (again)" appended for the later instance of a fall-back repeated hour. */
