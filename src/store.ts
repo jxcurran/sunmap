@@ -15,7 +15,11 @@ export function initialState(): AppState {
     time: { epochMs: Date.now() },
     mode: 'live', // FR-13.1
     mapStyle: { mode: 'app-time', explicit: false },
-    camera: { center: [DEFAULT_LOCATION.lng, DEFAULT_LOCATION.lat], zoom: 12, pitch: 45, bearing: 0 },
+    // zoom 15 (not 12): the sun-path dome has a fixed 250m radius (see map/geometry.ts
+    // DOME_RADIUS_M) — at city-wide zoom levels that's only ~10px across on screen,
+    // i.e. invisible, indistinguishable from the pin itself. z15 puts it at a
+    // comfortable ~150-200px so the marker is actually visible on first load.
+    camera: { center: [DEFAULT_LOCATION.lng, DEFAULT_LOCATION.lat], zoom: 15, pitch: 45, bearing: 0 },
     quality: 'Q0',
     net: { online: navigator.onLine },
     ui: { advancedOpen: false, searchStatus: 'idle', searchError: null, tzNotice: null, snapNotice: null },
